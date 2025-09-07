@@ -30,12 +30,13 @@ typedef struct {
 // Screen handling functions
 void init_screen(EditorState* state);
 void cleanup_screen();
-void get_terminal_size(EditorState* state);
+void update_terminal_size(EditorState* state);
 void refresh_screen(EditorState* state);
 void draw_borders(EditorState* state);
 void draw_lines(EditorState* state);
 void draw_status_bar(EditorState* state);
 void draw_command_line(EditorState* state);
+
 
 // Editor initialization and cleanup
 void init_editor(EditorState* state);

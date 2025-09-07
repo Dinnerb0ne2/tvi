@@ -1,215 +1,194 @@
 #include <tvi.h>
 
-HANDLE hStdOut, hStdIn;
-CONSOLE_CURSOR_INFO cursor_info;
-DWORD original_mode;
+static HANDLE hStdOut;
+static CHAR_INFO* buffer;
+static COORD buffer_size;
+static SMALL_RECT write_region;
 
-// Initialize screen settings
+#define FOREGROUND_YELLOW (FOREGROUND_RED | FOREGROUND_GREEN)
+
+// initial
 void init_screen(EditorState* state) {
     hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    hStdIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hStdOut == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Error getting output handle\n");
+        exit(1);
+    }
+
+    update_terminal_size(state);
     
-    // Hide cursor
-    cursor_info.cbSize = sizeof(CONSOLE_CURSOR_INFO);
-    cursor_info.bVisible = FALSE;
+    buffer_size.X = state->screen_cols;
+    buffer_size.Y = state->screen_rows;
+    buffer = malloc(buffer_size.X * buffer_size.Y * sizeof(CHAR_INFO));
+    if (!buffer) {
+        fprintf(stderr, "Memory allocation failed for buffer\n");
+        exit(1);
+    }
+    
+    // write
+    write_region.Left = 0;
+    write_region.Top = 0;
+    write_region.Right = buffer_size.X - 1;
+    write_region.Bottom = buffer_size.Y - 1;
+
+    // hide cursor
+    CONSOLE_CURSOR_INFO cursor_info = {0};
+    cursor_info.dwSize = 1;
+    cursor_info.bVisible = 0;
     SetConsoleCursorInfo(hStdOut, &cursor_info);
     
-    // Set input mode for raw input
-    GetConsoleMode(hStdIn, &original_mode);
-    SetConsoleMode(hStdIn, ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
-    
-    // Get initial terminal size
-    get_terminal_size(state);
+    SetConsoleOutputCP(CP_UTF8);
 }
 
-// Restore original screen settings
+// cls
 void cleanup_screen() {
-    // Show cursor
-    cursor_info.bVisible = TRUE;
+    CONSOLE_CURSOR_INFO cursor_info = {0};
+    cursor_info.dwSize = 1;
+    cursor_info.bVisible = 1;
     SetConsoleCursorInfo(hStdOut, &cursor_info);
     
-    // Restore input mode
-    SetConsoleMode(hStdIn, original_mode);
+    free(buffer);
     
-    // Clear screen
-    system("cls");
+    SetConsoleOutputCP(CP_OEMCP);
 }
 
-// Get current terminal dimensions
+// update
+void update_terminal_size(EditorState* state) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(hStdOut, &csbi)) {
+        state->screen_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        state->screen_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        
+        if (buffer_size.X != state->screen_cols || buffer_size.Y != state->screen_rows) {
+            buffer_size.X = state->screen_cols;
+            buffer_size.Y = state->screen_rows;
+            buffer = realloc(buffer, buffer_size.X * buffer_size.Y * sizeof(CHAR_INFO));
+            
+            write_region.Right = buffer_size.X - 1;
+            write_region.Bottom = buffer_size.Y - 1;
+        }
+    }
+}
+
+void clear_buffer(WORD attr) {
+    for (int y = 0; y < buffer_size.Y; y++) {
+        for (int x = 0; x < buffer_size.X; x++) {
+            buffer[y * buffer_size.X + x].Char.AsciiChar = ' ';
+            buffer[y * buffer_size.X + x].Attributes = attr;
+        }
+    }
+}
+
+// char
+void buffer_putchar(int x, int y, char c, WORD attr) {
+    if (x >= 0 && x < buffer_size.X && y >= 0 && y < buffer_size.Y) {
+        buffer[y * buffer_size.X + x].Char.AsciiChar = c;
+        buffer[y * buffer_size.X + x].Attributes = attr;
+    }
+}
+
+// string
+void buffer_puts(int x, int y, const char* str, WORD attr) {
+    int i = 0;
+    while (str[i] && x + i < buffer_size.X) {
+        buffer_putchar(x + i, y, str[i], attr);
+        i++;
+    }
+}
+
+// refresh
+void flush_buffer() {
+    COORD buffer_coord = {0, 0};
+    WriteConsoleOutputA(hStdOut, buffer, buffer_size, buffer_coord, &write_region);
+}
+
 void get_terminal_size(EditorState* state) {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
-    GetConsoleScreenBufferInfo(hStdOut, &csbi);
-    state->screen_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    state->screen_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-}
-
-// Set cursor position
-static void set_cursor_pos(int x, int y) {
-    COORD coord;
-    coord.X = x;
-    coord.Y = y;
-    SetConsoleCursorPosition(hStdOut, coord);
-}
-
-// Draw window borders
-void draw_borders(EditorState* state) {
-    set_cursor_pos(0, 0);
-    
-    // Top border
-    printf("%c", 201); // Top-left corner
-    for (int i = 1; i < state->screen_cols - 1; i++) {
-        printf("%c", 205); // Horizontal line
-    }
-    printf("%c", 187); // Top-right corner
-    
-    // Side borders
-    for (int i = 1; i < state->screen_rows - 2; i++) {
-        set_cursor_pos(0, i);
-        printf("%c", 186); // Vertical line
-        
-        set_cursor_pos(state->screen_cols - 1, i);
-        printf("%c", 186); // Vertical line
-    }
-    
-    // Status bar separator
-    int status_row = state->screen_rows - 2;
-    set_cursor_pos(0, status_row);
-    printf("%c", 204); // Left T-junction
-    for (int i = 1; i < state->screen_cols - 1; i++) {
-        printf("%c", 205); // Horizontal line
-    }
-    printf("%c", 185); // Right T-junction
-    
-    // Command line (bottom row)
-    set_cursor_pos(0, state->screen_rows - 1);
-    for (int i = 0; i < state->screen_cols; i++) {
-        printf(" ");
+    if (GetConsoleScreenBufferInfo(hStdOut, &csbi)) {
+        state->screen_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        state->screen_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else {
+        state->screen_cols = 80;
+        state->screen_rows = 24;
     }
 }
 
-// Draw text lines with optional line numbers
+
+void draw_border(EditorState* state) {}
+
 void draw_lines(EditorState* state) {
+    WORD text_attr = FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_RED;  // 白色文本
+    WORD mode_attr = FOREGROUND_YELLOW;
+    
+    // welcome
     if (state->welcome_screen) {
-        // Welcome screen content
-        const char* welcome[] = {
-            "Tiny Vi (tvi) - A simple vi clone for Windows",
-            "",
-            "Basic commands:",
-            "  :w      - Save file",
-            "  :q      - Quit",
-            "  :wq     - Save and quit",
-            "  :set number - Show line numbers",
-            "  i       - Enter insert mode",
-            "  ESC     - Enter normal mode",
-            "",
-            "Cursor movement: Arrow keys or h/j/k/l",
-            "",
-            "Start with: tvi.exe [filename] to edit a file"
-        };
-        int num_welcome = sizeof(welcome) / sizeof(welcome[0]);
-        int start_row = (state->screen_rows - 4 - num_welcome) / 2;
+        int mid_row = state->screen_rows / 2;
+        int mid_col = state->screen_cols / 2;
         
-        for (int i = 0; i < num_welcome && i + start_row < state->screen_rows - 3; i++) {
-            set_cursor_pos(2, start_row + i);
-            printf("%s", welcome[i]);
-        }
+        buffer_puts(mid_col - 10, mid_row - 3, "Tiny VI Editor (tvi)", text_attr);
+        buffer_puts(mid_col - 15, mid_row - 1, "Commands: :w (save), :q (quit), :wq (save & quit)", text_attr);
+        buffer_puts(mid_col - 15, mid_row, "Insert mode: press 'i', exit with ESC", text_attr);
+        buffer_puts(mid_col - 15, mid_row + 1, "Navigation: arrow keys or h/j/k/l", text_attr);
+        buffer_puts(mid_col - 12, mid_row + 3, "Press any key to start editing", text_attr);
         return;
     }
-    
-    // Calculate visible area
-    int line_num_width = state->show_numbers ? 6 : 0;
-    
-    // Draw each visible line
-    for (int i = 0; i < state->screen_rows - 3; i++) {
-        set_cursor_pos(1 + line_num_width, i + 1);
+
+    int display_row = 0; 
+    for (int line_num = 0; line_num < state->num_lines && display_row < state->screen_rows; line_num++) {
+        int col = 0;
         
-        if (i < state->num_lines) {
-            // Print line content, truncated to fit screen
-            int max_col = state->screen_cols - 3 - line_num_width;
-            if (state->lines[i].length > 0) {
-                int print_len = (state->lines[i].length < max_col) ? state->lines[i].length : max_col;
-                printf("%.*s", print_len, state->lines[i].data);
+        // line number
+        if (state->show_numbers) {
+            char num_str[12];
+            snprintf(num_str, sizeof(num_str), "%6d ", line_num + 1);
+            buffer_puts(col, display_row, num_str, mode_attr);
+            col += 7;
+        }
+        
+        int max_col = state->screen_cols - (state->show_numbers ? 7 : 0);  // 调整最大列数（无边界时）
+        if (state->lines[line_num].length <= max_col) {
+            buffer_puts(col, display_row, state->lines[line_num].data, text_attr);
+        } else {
+            for (int i = 0; i < max_col; i++) {
+                buffer_putchar(col + i, display_row, state->lines[line_num].data[i], text_attr);
             }
         }
         
-        // Clear remaining characters in the line
-        COORD pos;
-        GetConsoleCursorPosition(hStdOut, &pos);
-        for (int j = pos.X; j < state->screen_cols - 1; j++) {
-            printf(" ");
-        }
-        
-        // Draw line numbers if enabled
-        if (state->show_numbers && i < state->num_lines) {
-            set_cursor_pos(1, i + 1);
-            printf("%4d  ", i + 1);
-        }
+        display_row++;
     }
-}
 
-// Draw status bar with current mode and filename
-void draw_status_bar(EditorState* state) {
-    set_cursor_pos(1, state->screen_rows - 2);
-    
-    // Show current mode
+    // mode info
     const char* mode_str;
     switch (state->mode) {
-        case 0: mode_str = "-- NORMAL --"; break;
-        case 1: mode_str = "-- INSERT --"; break;
-        case 2: mode_str = "-- COMMAND --"; break;
+        case 0: mode_str = "NORMAL MODE"; break;
+        case 1: mode_str = "INSERT MODE"; break;
+        case 2: 
+            char cmd_str[256];
+            size_t max_cmd_len = sizeof(cmd_str) - 10;
+            if (strlen(state->command) > max_cmd_len) {
+                char truncated[max_cmd_len + 1];
+                strncpy(truncated, state->command, max_cmd_len);
+                truncated[max_cmd_len] = '\0';
+                snprintf(cmd_str, sizeof(cmd_str), "COMMAND: %s", truncated);
+            } else {
+                snprintf(cmd_str, sizeof(cmd_str), "COMMAND: %s", state->command);
+            }
+            mode_str = cmd_str;
+            break;
         default: mode_str = "";
     }
-    printf("%s", mode_str);
-    
-    // Show filename
-    if (state->filename) {
-        set_cursor_pos(state->screen_cols - strlen(state->filename) - 1, state->screen_rows - 2);
-        printf("%s", state->filename);
-    }
+    buffer_puts(0, state->screen_rows - 1, mode_str, mode_attr); // mode
+
+    int cursor_col = state->cursor_col + (state->show_numbers ? 7 : 0);
+    COORD coord = { (SHORT)cursor_col, (SHORT)state->cursor_row };
+    SetConsoleCursorPosition(hStdOut, coord);
 }
 
-// Draw command input line
-void draw_command_line(EditorState* state) {
-    set_cursor_pos(1, state->screen_rows - 1);
-    if (state->mode == 2) {
-        printf(":%s", state->command);
-    } else {
-        printf(" "); // Clear command line when not in command mode
-    }
-}
-
-// Update cursor position for display
-void update_cursor_display(EditorState* state) {
-    if (state->welcome_screen) return;
-    
-    int x = 1 + state->cursor_col;
-    int y = 1 + state->cursor_row;
-    
-    // Adjust for line numbers
-    if (state->show_numbers) {
-        x += 6;
-    }
-    
-    set_cursor_pos(x, y);
-}
-
-// Refresh entire screen
 void refresh_screen(EditorState* state) {
-    // Clear screen by filling with spaces
-    for (int y = 0; y < state->screen_rows; y++) {
-        set_cursor_pos(0, y);
-        for (int x = 0; x < state->screen_cols; x++) {
-            printf(" ");
-        }
-    }
+    clear_buffer(0);
     
-    // Redraw all elements
-    draw_borders(state);
+    draw_border(state);
     draw_lines(state);
-    draw_status_bar(state);
-    draw_command_line(state);
     
-    // Update cursor position
-    update_cursor_display(state);
+    flush_buffer();
 }
-    

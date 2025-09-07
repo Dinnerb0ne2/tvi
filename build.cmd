@@ -36,9 +36,9 @@ if "%COMPILER%"=="cl" (
 :: output
 if %errorlevel% equ 0 (
     echo.
-    echo Build succeeded! Executable: %OUT_EXE%
+    echo Build succeeded. Executable: %OUT_EXE%
 ) else (
     echo.
     echo.
-    echo Build Failed!
+    echo Build Failed.
 )
